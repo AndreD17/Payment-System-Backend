@@ -9,16 +9,23 @@ const router = Router();
 const createSchema = z.object({
   body: z.object({
     userEmail: z.string().email(),
-    planId: z.number().int()
-  })
+    // ✅ CHANGE: allow string->number safely
+    planId: z.coerce.number().int(),
+  }),
 });
 
 router.post("/checkout", async (req, res, next) => {
   try {
     const parsed = createSchema.safeParse({ body: req.body });
-    if (!parsed.success) return next({ status: 400, message: "Validation error", details: parsed.error.flatten() });
+    if (!parsed.success) {
+      return next({
+        status: 400,
+        message: "Validation error",
+        details: parsed.error.flatten(),
+      });
+    }
 
-    const { userEmail, planId } = req.body;
+    const { userEmail, planId } = parsed.data.body;
 
     // find/create user
     const uRes = await pool.query(
@@ -56,13 +63,27 @@ router.post("/checkout", async (req, res, next) => {
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
-      success_url: `${env.appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+
+      // ✅ include local sub id so frontend can fetch receipt
+      success_url: `${env.appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}&sub_id=${subId}`,
       cancel_url: `${env.appUrl}/billing/cancel?sub_id=${subId}`,
+
+      client_reference_id: String(subId),
+
       metadata: {
         userId: String(user.id),
-        subscriptionId: String(subId)
-      }
+        subscriptionId: String(subId),
+      },
+
+      subscription_data: {
+        metadata: {
+          localSubscriptionId: String(subId),
+          localUserId: String(user.id),
+          localPlanId: String(plan.id),
+        },
+      },
     });
+
 
     await pool.query(
       "UPDATE subscriptions SET stripe_checkout_session_id=$1 WHERE id=$2",
@@ -70,6 +91,40 @@ router.post("/checkout", async (req, res, next) => {
     );
 
     res.status(201).json({ subscriptionId: subId, checkoutUrl: session.url });
+  } catch (e) {
+    next(e);
+  }
+});
+
+  // GET /api/subscriptions/receipt/:sessionId
+router.get("/receipt/:sessionId", async (req, res, next) => {
+  try {
+    const sessionId = req.params.sessionId;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Missing session id" });
+    }
+
+    // Find subscription by checkout session
+    const r = await pool.query(
+      `SELECT *
+       FROM subscriptions
+       WHERE stripe_checkout_session_id = $1`,
+      [sessionId]
+    );
+
+    const sub = r.rows[0];
+    if (!sub) return res.status(404).json({ error: "Subscription not found yet" });
+
+    return res.json({
+      subscriptionId: sub.id,
+      stripeSubscriptionId: sub.stripe_subscription_id,
+      stripeInvoiceId: sub.stripe_invoice_id,
+      paymentIntentId: sub.stripe_payment_intent_id,
+      chargeId: sub.stripe_charge_id,
+      currentPeriodEnd: sub.current_period_end,
+      status: sub.status,
+    });
   } catch (e) {
     next(e);
   }

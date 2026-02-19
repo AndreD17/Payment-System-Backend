@@ -1,3 +1,4 @@
+-- USERS
 CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
@@ -5,18 +6,21 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Plans in your app map to Stripe Price IDs
+-- PLANS
 CREATE TABLE IF NOT EXISTS plans (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   stripe_price_id TEXT UNIQUE NOT NULL,
-  interval TEXT NOT NULL, -- 'month' | 'year'
+  interval TEXT NOT NULL,
   amount_cents INT NOT NULL,
   currency TEXT NOT NULL DEFAULT 'usd',
   active BOOLEAN NOT NULL DEFAULT true
 );
 
-CREATE TYPE sub_status AS ENUM ('INCOMPLETE', 'ACTIVE', 'PAST_DUE', 'CANCELED');
+-- SUBSCRIPTIONS
+DO $$ BEGIN
+  CREATE TYPE sub_status AS ENUM ('INCOMPLETE', 'ACTIVE', 'PAST_DUE', 'CANCELED');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id BIGSERIAL PRIMARY KEY,
@@ -27,12 +31,17 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   stripe_subscription_id TEXT UNIQUE,
   stripe_checkout_session_id TEXT UNIQUE,
 
+  -- ✅ REQUIRED FOR REFUNDS / AUDIT
+  stripe_invoice_id TEXT,
+  stripe_payment_intent_id TEXT,
+  stripe_charge_id TEXT,
+
   current_period_end TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Store invoices/payment events for audit + fulfillment triggers
+-- BILLING EVENTS
 CREATE TABLE IF NOT EXISTS billing_events (
   id BIGSERIAL PRIMARY KEY,
   user_id BIGINT REFERENCES users(id),
@@ -45,31 +54,34 @@ CREATE TABLE IF NOT EXISTS billing_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Dedupe Stripe events (webhooks can be retried)
+-- ✅ WEBHOOK DEDUPE (MUST ALLOW NULL processed_at + last_error)
 CREATE TABLE IF NOT EXISTS webhook_events (
   id BIGSERIAL PRIMARY KEY,
   stripe_event_id TEXT UNIQUE NOT NULL,
-  processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  processed_at TIMESTAMPTZ NULL,
+  last_error TEXT NULL
 );
 
--- Outbox for async email + fulfillment (reliable background processing)
-CREATE TYPE outbox_type AS ENUM ('EMAIL_RECEIPT', 'FULFILL_SUBSCRIPTION');
+-- OUTBOX
+DO $$ BEGIN
+  CREATE TYPE outbox_type AS ENUM ('EMAIL_RECEIPT', 'FULFILL_SUBSCRIPTION');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS outbox (
   id BIGSERIAL PRIMARY KEY,
   type outbox_type NOT NULL,
   payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING|PROCESSING|DONE|FAILED
+  status TEXT NOT NULL DEFAULT 'PENDING',
   attempts INT NOT NULL DEFAULT 0,
   next_run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Idempotency keys to prevent double-fulfillment
+-- IDEMPOTENCY KEYS
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   id BIGSERIAL PRIMARY KEY,
   key TEXT UNIQUE NOT NULL,
-  scope TEXT NOT NULL, -- e.g. 'FULFILLMENT'
+  scope TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
