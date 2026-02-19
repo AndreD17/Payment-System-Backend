@@ -8,7 +8,6 @@ import { pool } from "../db/pool.js";
 
 const router = Router();
 
-/** helper */
 const getId = (x: any): string | null => {
   if (!x) return null;
   if (typeof x === "string") return x;
@@ -23,13 +22,6 @@ const mapStripeSubStatus = (s: any) => {
   return "INCOMPLETE";
 };
 
-/**
- * ✅ CHANGE #0:
- * Modern Stripe invoice can link subscription via:
- *   invoice.parent.subscription_details.subscription
- * or legacy via:
- *   invoice.subscription
- */
 function getStripeSubIdFromInvoice(inv: any): string | null {
   const parent = inv?.parent;
 
@@ -41,13 +33,9 @@ function getStripeSubIdFromInvoice(inv: any): string | null {
   return modern || getId(inv?.subscription) || null;
 }
 
-/**
- * ✅ CHANGE #A:
- * Bridge for when charge.invoice is missing and invoice events don't include PI/charge.
- * We use Stripe customer id to find the most likely local subscription.
- */
+
 async function findLocalSubByCustomerId(customerId: string) {
-  // newest subscription for the customer
+
   const r = await pool.query(
     `
     SELECT s.*
@@ -64,7 +52,6 @@ async function findLocalSubByCustomerId(customerId: string) {
 }
 
 async function upsertWebhookEventStart(eventId: string) {
-  // Insert once; if exists, read processed_at.
   const r = await pool.query(
     `INSERT INTO webhook_events(stripe_event_id, processed_at, last_error)
      VALUES ($1, NULL, NULL)
@@ -94,10 +81,7 @@ async function markWebhookFailed(eventId: string, msg: string) {
   );
 }
 
-/**
- * ✅ CHANGE #1:
- * Expand latest_invoice.payment_intent.latest_charge to recover charge id.
- */
+
 async function syncLocalSubByStripeSubId(
   stripeSubId: string,
   reason: string,
@@ -124,7 +108,6 @@ async function syncLocalSubByStripeSubId(
   const stripeInvoiceId = getId(li);
   const paymentIntentId = getId(li?.payment_intent);
 
-  // ✅ CHANGE #2: charge fallback to PI.latest_charge
   let chargeId = getId(li?.charge);
   if (!chargeId && li?.payment_intent) {
     chargeId = getId(li.payment_intent?.latest_charge);
@@ -155,10 +138,6 @@ async function syncLocalSubByStripeSubId(
   });
 }
 
-/**
- * ✅ CHANGE #3:
- * Invoice sync that supports modern parent-based subscription linkage.
- */
 async function syncFromInvoice(
   invoiceId: string,
   reason: string,
@@ -201,7 +180,6 @@ async function syncFromInvoice(
     chargeId = getId((inv as any).payment_intent?.latest_charge);
   }
 
-  // extra: if PI exists but still no charge, retrieve PI.latest_charge
   if (paymentIntentId && !chargeId) {
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId, {
       expand: ["latest_charge"],
@@ -233,11 +211,6 @@ async function syncFromInvoice(
   await syncLocalSubByStripeSubId(stripeSubId, reason, eventId);
 }
 
-/**
- * ✅ CHANGE #12 (CRITICAL):
- * When charge.invoice is missing,
- * bridge via PaymentIntent → invoice → subscription (or customer → localSub fallback).
- */
 async function syncFromPaymentIntent(
   paymentIntentId: string,
   reason: string,
@@ -271,7 +244,6 @@ async function syncFromPaymentIntent(
     customerId,
   });
 
-  // If we can resolve invoice+sub, persist and sync from invoice.
   if (invoiceId && stripeSubId) {
     await pool.query(
       `UPDATE subscriptions
@@ -287,7 +259,6 @@ async function syncFromPaymentIntent(
     return;
   }
 
-  // If no invoice linkage, but we have customer, try local DB mapping (your log shows charge.invoice undefined)
   if (!stripeSubId && customerId) {
     const localSub = await findLocalSubByCustomerId(customerId);
     if (localSub?.stripe_subscription_id) {
@@ -336,7 +307,6 @@ router.post(
       const processedAt = await upsertWebhookEventStart(event.id);
       if (processedAt) return res.json({ received: true, deduped: true });
 
-      // ✅ CHANGE (TypeScript): widen event.type so we can handle non-typed events like invoice_payment.*
       const eventType = event.type as string;
 
       switch (eventType) {
@@ -372,7 +342,6 @@ router.post(
           break;
         }
 
-        // ✅ paid events
         case "invoice.paid":
         case "invoice.payment_succeeded": {
           const inv = event.data.object as Stripe.Invoice;
@@ -380,10 +349,6 @@ router.post(
           break;
         }
 
-        /**
-         * ✅ KEY FIX for your log:
-         * If charge has no invoice, bridge via payment_intent (and customer fallback).
-         */
         case "charge.succeeded": {
           const ch = event.data.object as Stripe.Charge;
           const invoiceId = getId((ch as any).invoice);
@@ -405,7 +370,6 @@ router.post(
             break;
           }
 
-          // final fallback: customer -> local subscription
           if (customerId) {
             console.log("ℹ️ charge.succeeded has no invoice+PI — falling back to customer", {
               eventId: event.id,
@@ -428,27 +392,16 @@ router.post(
           break;
         }
         
-
-        /**
-         * ✅ Optional but helps a lot:
-         * payment_intent.succeeded often has better linkage for invoice/charge.
-         */
         case "payment_intent.succeeded": {
           const pi = event.data.object as Stripe.PaymentIntent;
           await syncFromPaymentIntent(pi.id, "payment_intent.succeeded", event.id);
           break;
         }
 
-        /**
-         * ✅ FIX TS + cover your observed logs:
-         * These may exist in your Stripe API version but not in typings.
-         * We accept them because eventType is string.
-         */
         case "invoice_payment.paid":
         case "invoice_payment.succeeded": {
-          // Best-effort: these objects vary; try to recover invoice id if present
           const obj: any = event.data.object;
-          const invId = getId(obj?.invoice) || getId(obj?.id); // depends on payload
+          const invId = getId(obj?.invoice) || getId(obj?.id); 
           if (invId) {
             await syncFromInvoice(invId, eventType, event.id);
           }

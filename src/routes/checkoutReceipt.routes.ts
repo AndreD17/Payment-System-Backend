@@ -21,7 +21,6 @@ async function getReceiptForLocalSubscription(localSubId: number) {
     return { status: 400, body: { error: "No Stripe subscription id yet. Try again in a few seconds." } };
   }
 
-  // Latest invoice (lite)
   const invoices = await stripe.invoices.list({
     subscription: sub.stripe_subscription_id,
     limit: 1,
@@ -30,7 +29,6 @@ async function getReceiptForLocalSubscription(localSubId: number) {
   const invLite = invoices.data[0];
   if (!invLite) return { status: 404, body: { error: "No invoices found" } };
 
-  // Full invoice with expansions
   const inv = await stripe.invoices.retrieve(invLite.id, {
     expand: ["payment_intent", "payment_intent.latest_charge", "charge", "customer", "subscription", "parent"],
   });
@@ -50,7 +48,6 @@ async function getReceiptForLocalSubscription(localSubId: number) {
     chargeId = getId((inv as any).payment_intent?.latest_charge);
   }
 
-  // Persist (so refunds work later)
   await pool.query(
     `UPDATE subscriptions
      SET stripe_invoice_id = COALESCE($1, stripe_invoice_id),
@@ -86,7 +83,6 @@ router.get("/receipt/by-session/:sessionId", async (req, res, next) => {
 
     const sessionId = parsed.data.sessionId;
 
-    // 1) Fast path: we already stored stripe_checkout_session_id on subscriptions table
     const sRes = await pool.query(
       `SELECT id, stripe_subscription_id
        FROM subscriptions
@@ -100,7 +96,6 @@ router.get("/receipt/by-session/:sessionId", async (req, res, next) => {
       return res.status(out.status).json(out.body);
     }
 
-    // 2) Fallback: ask Stripe for session, then map to local subscription id using metadata/client_reference_id/sub metadata
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["subscription"],
     });
@@ -114,7 +109,6 @@ router.get("/receipt/by-session/:sessionId", async (req, res, next) => {
 
     const metaLocalSubId = metaLocalSubIdRaw ? Number(metaLocalSubIdRaw) : 0;
 
-    // If we can find local by metadata id, attach stripe ids for future speed
     if (metaLocalSubId && Number.isFinite(metaLocalSubId)) {
       await pool.query(
         `UPDATE subscriptions
@@ -129,7 +123,6 @@ router.get("/receipt/by-session/:sessionId", async (req, res, next) => {
       return res.status(out.status).json(out.body);
     }
 
-    // 3) If we have stripe subscription id, try locate local by stripe_subscription_id
     if (stripeSubId) {
       const r2 = await pool.query(
         `SELECT id FROM subscriptions WHERE stripe_subscription_id = $1 LIMIT 1`,

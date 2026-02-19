@@ -36,7 +36,6 @@ export function startOutboxWorker() {
       await client.query("UPDATE outbox SET status='PROCESSING' WHERE id=$1", [job.id]);
       await client.query("COMMIT");
 
-      // process outside transaction
       if (job.type === "EMAIL_RECEIPT") {
         const payload = job.payload;
         const userRes = await pool.query("SELECT email FROM users WHERE id=$1", [payload.userId]);
@@ -53,12 +52,9 @@ export function startOutboxWorker() {
       if (job.type === "FULFILL_SUBSCRIPTION") {
         const payload = job.payload;
 
-        // Idempotent fulfillment key: same invoice should not fulfill twice
         const key = `FULFILLMENT:${payload.invoiceId}`;
         const claimed = await claimIdempotencyKey(key, "FULFILLMENT");
         if (claimed) {
-          // Do real fulfillment: enable premium, provision resources, etc.
-          // For portfolio: update a user flag or write a log row
           console.log("✅ Fulfilled subscription for invoice:", payload.invoiceId);
         } else {
           console.log("↩️ Fulfillment already done for invoice:", payload.invoiceId);
@@ -67,7 +63,6 @@ export function startOutboxWorker() {
 
       await pool.query("UPDATE outbox SET status='DONE' WHERE id=$1", [job.id]);
     } catch (e: any) {
-      // exponential-ish retry
       try {
         await pool.query(
           `UPDATE outbox
