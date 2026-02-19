@@ -96,7 +96,6 @@ router.post("/checkout", async (req, res, next) => {
   }
 });
 
-  // GET /api/subscriptions/receipt/:sessionId
 router.get("/receipt/:sessionId", async (req, res, next) => {
   try {
     const sessionId = req.params.sessionId;
@@ -105,7 +104,7 @@ router.get("/receipt/:sessionId", async (req, res, next) => {
       return res.status(400).json({ error: "Missing session id" });
     }
 
-    // Find subscription by checkout session
+  
     const r = await pool.query(
       `SELECT *
        FROM subscriptions

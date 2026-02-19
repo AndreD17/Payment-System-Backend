@@ -3,7 +3,6 @@ import { pool } from "../db/pool.js";
 
 const router = Router();
 
-// Public endpoint: list active plans
 router.get("/", async (_req, res, next) => {
   try {
     const r = await pool.query(

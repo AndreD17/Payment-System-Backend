@@ -31,17 +31,13 @@ export const env = {
 
   dbUrl: must("DATABASE_URL"),
 
-  /** Stripe */
   stripeSecretKey: must("STRIPE_SECRET_KEY"),
   stripeWebhookSecret: must("STRIPE_WEBHOOK_SECRET"),
 
-  /** Frontend URL */
   appUrl: process.env.APP_URL || "http://localhost:5173",
 
-  /** Admin */
   adminApiKey: must("ADMIN_API_KEY"),
 
-  /** Email */
   smtpHost: must("SMTP_HOST"),
   smtpPort: num("SMTP_PORT"),
   smtpUser: process.env.SMTP_USER || "",

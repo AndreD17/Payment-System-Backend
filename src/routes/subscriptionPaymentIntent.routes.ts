@@ -53,7 +53,6 @@ router.get("/:id/payment-intent", async (req, res, next) => {
     const invLite = invoices.data[0];
     if (!invLite) return res.status(404).json({ error: "No invoices found" });
 
-    // 2) Retrieve full invoice with expansions (+ Clover payments)
     const inv = await stripe.invoices.retrieve(invLite.id, {
       expand: [
         "payment_intent",
@@ -75,17 +74,15 @@ router.get("/:id/payment-intent", async (req, res, next) => {
     const amountPaid = typeof (inv as any).amount_paid === "number" ? (inv as any).amount_paid : null;
     const paid = typeof (inv as any).paid === "boolean" ? (inv as any).paid : null;
 
-    // Clover-aware PI extraction
     let paymentIntentId: string | null = getId((inv as any).payment_intent) || extractPiFromInvoicePayments(inv as any);
 
-    // charge preference: invoice.charge -> PI.latest_charge
+
     let chargeId: string | null = getId((inv as any).charge);
     if (!chargeId && paymentIntentId) {
       const pi = await stripe.paymentIntents.retrieve(paymentIntentId, { expand: ["latest_charge"] });
       chargeId = getId((pi as any).latest_charge);
     }
 
-    // Persist for refunds
     await pool.query(
       `UPDATE subscriptions
        SET stripe_invoice_id = COALESCE($1, stripe_invoice_id),
