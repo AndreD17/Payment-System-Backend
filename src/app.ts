@@ -14,6 +14,8 @@ import subscriptionSync from "./routes/subscriptionSync.routes.js";
 import subPI from "./routes/subscriptionPaymentIntent.routes.js";
 import Refund from "./routes/subscriptionRefundHandle.routes.js"
 import checkoutReceipt from "./routes/checkoutReceipt.routes.js";
+import auth from "./routes/auth.routes.js";
+import { requireAuth, requireRole } from "./middleware/auth.js";
 import admin from "./routes/admin.routes.js";
 import plans from "./routes/plans.routes.js";
 
@@ -52,13 +54,22 @@ export function createApp(): Express {
     res.json({ ok: true, message: "Backend Server is Running..." })
   );
 
-  app.use("/api/subscriptions", subs);
-  app.use("/api/subscriptions", subscriptionSync);
-  app.use("/api/subscriptions", subPI);
-  app.use("/api/subscriptions", checkoutReceipt);
-  app.use("/api/subscriptions", Refund);
-  app.use("/api/plans", plans);
-  app.use("/api/admin", admin);
+
+app.use("/api/auth", auth);
+app.use("/api/plans", plans);
+
+// Public routes FIRST
+app.use("/api/public", checkoutReceipt);
+
+//Admin locked
+app.use("/api/admin", requireAuth, requireRole("admin"), admin);
+
+//Subscriptions locked (or lock inside each route)
+app.use("/api/subscriptions", requireAuth, subs);
+app.use("/api/subscriptions", subscriptionSync);
+app.use("/api/subscriptions", subPI);
+app.use("/api/subscriptions", Refund);
+
 
   app.use(errorHandler);
   return app;

@@ -2,6 +2,8 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import { stripe } from "../stripe/client.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requireSubscriptionOwnerOrAdmin } from "../middleware/ownership.js";
 
 const router = Router();
 
@@ -29,7 +31,7 @@ function extractPiFromInvoicePayments(inv: any): string | null {
   return null;
 }
 
-router.get("/:id/payment-intent", async (req, res, next) => {
+router.get("/:id/payment-intent", requireAuth, requireSubscriptionOwnerOrAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {

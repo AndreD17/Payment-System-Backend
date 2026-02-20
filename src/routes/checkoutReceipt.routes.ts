@@ -1,3 +1,4 @@
+// src/routes/public.routes.ts
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
@@ -12,132 +13,145 @@ const getId = (x: any): string | null => {
   return null;
 };
 
-async function getReceiptForLocalSubscription(localSubId: number) {
-  const r = await pool.query("SELECT * FROM subscriptions WHERE id=$1", [localSubId]);
-  const sub = r.rows[0];
-
-  if (!sub) return { status: 404, body: { error: "Subscription not found" } };
-  if (!sub.stripe_subscription_id) {
-    return { status: 400, body: { error: "No Stripe subscription id yet. Try again in a few seconds." } };
-  }
-
-  const invoices = await stripe.invoices.list({
-    subscription: sub.stripe_subscription_id,
-    limit: 1,
-  });
-
-  const invLite = invoices.data[0];
-  if (!invLite) return { status: 404, body: { error: "No invoices found" } };
-
-  const inv = await stripe.invoices.retrieve(invLite.id, {
-    expand: ["payment_intent", "payment_intent.latest_charge", "charge", "customer", "subscription", "parent"],
-  });
-
-  const hostedInvoiceUrl = (inv as any)?.hosted_invoice_url ?? null;
-  const stripeInvoiceId = inv.id;
-
-  const amountDue = typeof (inv as any).amount_due === "number" ? (inv as any).amount_due : null;
-  const amountPaid = typeof (inv as any).amount_paid === "number" ? (inv as any).amount_paid : null;
-  const currency = typeof (inv as any).currency === "string" ? (inv as any).currency : null;
-  const invoiceStatus = (inv as any)?.status ?? null;
-
-  let paymentIntentId: string | null = getId((inv as any).payment_intent);
-
-  let chargeId: string | null = getId((inv as any).charge);
-  if (!chargeId && (inv as any).payment_intent) {
-    chargeId = getId((inv as any).payment_intent?.latest_charge);
-  }
-
-  await pool.query(
-    `UPDATE subscriptions
-     SET stripe_invoice_id = COALESCE($1, stripe_invoice_id),
-         stripe_payment_intent_id = COALESCE($2, stripe_payment_intent_id),
-         stripe_charge_id = COALESCE($3, stripe_charge_id),
-         updated_at = now()
-     WHERE id = $4`,
-    [stripeInvoiceId, paymentIntentId, chargeId, localSubId]
-  );
-
-  return {
-    status: 200,
-    body: {
-      subscriptionId: localSubId,
-      stripeSubscriptionId: sub.stripe_subscription_id,
-      stripeInvoiceId,
-      paymentIntentId,
-      chargeId,
-      hostedInvoiceUrl,
-      invoiceStatus,
-      amountDue,
-      amountPaid,
-      currency,
-    },
-  };
-}
-
-router.get("/receipt/by-session/:sessionId", async (req, res, next) => {
+router.get("/receipt/:sessionId", async (req, res, next) => {
   try {
-    const schema = z.object({ sessionId: z.string().min(5) });
+    const schema = z.object({ sessionId: z.string().min(10) });
     const parsed = schema.safeParse({ sessionId: req.params.sessionId });
     if (!parsed.success) return res.status(400).json({ error: "Invalid session id" });
 
     const sessionId = parsed.data.sessionId;
 
-    const sRes = await pool.query(
-      `SELECT id, stripe_subscription_id
-       FROM subscriptions
-       WHERE stripe_checkout_session_id = $1
-       LIMIT 1`,
-      [sessionId]
-    );
-
-    if (sRes.rows[0]?.id) {
-      const out = await getReceiptForLocalSubscription(Number(sRes.rows[0].id));
-      return res.status(out.status).json(out.body);
-    }
-
+    // 1) Checkout Session
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["subscription"],
+      expand: ["subscription", "customer"],
     });
 
     const stripeSubId = getId((session as any).subscription);
 
-    const metaLocalSubIdRaw =
-      (session as any)?.metadata?.subscriptionId ??
-      (session as any)?.client_reference_id ??
-      null;
+    if (!stripeSubId) {
+      return res.status(202).json({
+        processing: true,
+        message: "Subscription is still being finalized. Refresh in a few seconds.",
+        sessionId,
+      });
+    }
 
-    const metaLocalSubId = metaLocalSubIdRaw ? Number(metaLocalSubIdRaw) : 0;
+    // 2) Subscription -> latest_invoice
+    const stripeSub = await stripe.subscriptions.retrieve(stripeSubId, {
+      expand: ["latest_invoice"],
+    });
 
-    if (metaLocalSubId && Number.isFinite(metaLocalSubId)) {
+    const periodEndUnix =
+      typeof (stripeSub as any).current_period_end === "number" ? (stripeSub as any).current_period_end : null;
+
+    const li: any = (stripeSub as any).latest_invoice;
+    const stripeInvoiceId = getId(li);
+
+    if (!stripeInvoiceId) {
+      return res.status(202).json({
+        processing: true,
+        message: "Invoice not ready yet. Refresh in a few seconds.",
+        sessionId,
+        stripeSubscriptionId: stripeSubId,
+      });
+    }
+
+    // 3) Invoice (expand for receipt info)
+    const inv: any = await stripe.invoices.retrieve(stripeInvoiceId, {
+      expand: [
+        "customer",
+        "payment_intent",
+        "payment_intent.latest_charge",
+        "charge",
+        "lines.data.price.product",
+      ],
+    });
+
+    const invoiceStatus = inv?.status ?? null;
+    const hostedInvoiceUrl = inv?.hosted_invoice_url ?? null;
+    const invoicePdf = inv?.invoice_pdf ?? null;
+    const invoiceNumber = inv?.number ?? null;
+    const created = typeof inv?.created === "number" ? inv.created : null;
+
+    const amountPaid = typeof inv?.amount_paid === "number" ? inv.amount_paid : null;
+    const amountDue = typeof inv?.amount_due === "number" ? inv.amount_due : null;
+    const currency = typeof inv?.currency === "string" ? inv.currency : null;
+
+    const paymentIntentId = getId(inv?.payment_intent);
+
+    // charge fallback
+    let chargeId = getId(inv?.charge);
+    if (!chargeId && inv?.payment_intent) chargeId = getId(inv.payment_intent?.latest_charge);
+
+    let receiptUrl: string | null = null;
+    if (chargeId) {
+      const ch: any = await stripe.charges.retrieve(chargeId);
+      receiptUrl = ch?.receipt_url ?? null;
+    }
+
+    // product/plan info (from invoice line)
+    const firstLine = inv?.lines?.data?.[0];
+    const productName = firstLine?.price?.product?.name ?? null;
+    const interval = firstLine?.price?.recurring?.interval ?? null;
+
+    // customer info
+    const customerEmail = inv?.customer_email ?? inv?.customer?.email ?? null;
+
+    // local sub id (optional, for your DB)
+    const local = await pool.query(
+      `SELECT id FROM subscriptions WHERE stripe_checkout_session_id=$1 LIMIT 1`,
+      [sessionId]
+    );
+    const localId = local.rows?.[0]?.id ? Number(local.rows[0].id) : null;
+
+    // backfill DB (best effort)
+    if (localId) {
       await pool.query(
         `UPDATE subscriptions
-         SET stripe_checkout_session_id = COALESCE($1, stripe_checkout_session_id),
-             stripe_subscription_id = COALESCE($2, stripe_subscription_id),
+         SET stripe_subscription_id = COALESCE($1, stripe_subscription_id),
+             stripe_invoice_id = COALESCE($2, stripe_invoice_id),
+             stripe_payment_intent_id = COALESCE($3, stripe_payment_intent_id),
+             stripe_charge_id = COALESCE($4, stripe_charge_id),
+             current_period_end = COALESCE(to_timestamp($5), current_period_end),
              updated_at = now()
-         WHERE id = $3`,
-        [sessionId, stripeSubId, metaLocalSubId]
+         WHERE id = $6`,
+        [stripeSubId, stripeInvoiceId, paymentIntentId, chargeId, periodEndUnix, localId]
       );
-
-      const out = await getReceiptForLocalSubscription(metaLocalSubId);
-      return res.status(out.status).json(out.body);
     }
 
-    if (stripeSubId) {
-      const r2 = await pool.query(
-        `SELECT id FROM subscriptions WHERE stripe_subscription_id = $1 LIMIT 1`,
-        [stripeSubId]
-      );
-      if (r2.rows[0]?.id) {
-        const out = await getReceiptForLocalSubscription(Number(r2.rows[0].id));
-        return res.status(out.status).json(out.body);
-      }
-    }
-
-    return res.status(404).json({
-      error: "Could not map session to local subscription yet. Try again in a few seconds.",
+    return res.json({
+      ok: true,
       sessionId,
+
+      // local
+      subscriptionId: localId,
+
+      // stripe
       stripeSubscriptionId: stripeSubId,
+      stripeInvoiceId,
+      paymentIntentId,
+      chargeId,
+
+      // receipt
+      invoiceStatus,
+      hostedInvoiceUrl,
+      invoicePdf,
+      receiptUrl,
+      invoiceNumber,
+      created,
+
+      // money
+      amountPaid,
+      amountDue,
+      currency,
+
+      // user-facing extras
+      customerEmail,
+      productName,
+      interval,
+
+      // time
+      currentPeriodEnd: periodEndUnix ? new Date(periodEndUnix * 1000).toISOString() : null,
     });
   } catch (e) {
     next(e);

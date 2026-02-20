@@ -3,7 +3,8 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { stripe } from "../stripe/client.js";
 import { env } from "../config/env.js";
-
+import { requireAuth } from "../middleware/auth.js";
+import { requireSubscriptionOwnerOrAdmin } from "../middleware/ownership.js";
 const router = Router();
 
 const createSchema = z.object({
@@ -96,24 +97,23 @@ router.post("/checkout", async (req, res, next) => {
   }
 });
 
-router.get("/receipt/:sessionId", async (req, res, next) => {
+router.get("/receipt/:sessionId", requireAuth, async (req, res, next) => {
   try {
     const sessionId = req.params.sessionId;
+    if (!sessionId) return next({ status: 400, message: "Missing session id" });
 
-    if (!sessionId) {
-      return res.status(400).json({ error: "Missing session id" });
-    }
-
-  
     const r = await pool.query(
-      `SELECT *
-       FROM subscriptions
-       WHERE stripe_checkout_session_id = $1`,
+      `SELECT * FROM subscriptions WHERE stripe_checkout_session_id = $1`,
       [sessionId]
     );
 
     const sub = r.rows[0];
-    if (!sub) return res.status(404).json({ error: "Subscription not found yet" });
+    if (!sub) return next({ status: 404, message: "Subscription not found yet" });
+
+    // Ownership check for session-based lookup
+    if (req.auth?.role !== "admin" && Number(sub.user_id) !== req.auth?.userId) {
+      return next({ status: 403, message: "Forbidden" });
+    }
 
     return res.json({
       subscriptionId: sub.id,
@@ -124,6 +124,17 @@ router.get("/receipt/:sessionId", async (req, res, next) => {
       currentPeriodEnd: sub.current_period_end,
       status: sub.status,
     });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get("/:id", requireAuth, requireSubscriptionOwnerOrAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query("SELECT * FROM subscriptions WHERE id=$1", [id]);
+    if (!r.rows[0]) return next({ status: 404, message: "Not found" });
+    res.json({ subscription: r.rows[0] });
   } catch (e) {
     next(e);
   }

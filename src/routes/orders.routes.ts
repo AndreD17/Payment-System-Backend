@@ -7,10 +7,7 @@ import { env } from "../config/env.js";
 
 const router = Router();
 
-/**
- * In a real app you would use authentication.
- * For portfolio simplicity, we accept userEmail and create/find user.
- */
+
 const createOrderSchema = z.object({
   body: z.object({
     userEmail: z.string().email(),

@@ -42,5 +42,16 @@ export const env = {
   smtpPort: num("SMTP_PORT"),
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
+  smtpSecure: process.env.SMTP_SECURE === "true",
   emailFrom: must("EMAIL_FROM"),
+
+  jwtSecret: must("JWT_SECRET"),
+  jwtIssuer: process.env.JWT_ISSUER || "payment-system",
+  jwtAudience: process.env.JWT_AUDIENCE || "payment-system-users",
+
+  accessTokenTtlMin: Number(process.env.ACCESS_TOKEN_TTL_MIN || 15),
+  refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30),
+
+  cookieSecure: process.env.COOKIE_SECURE === "true",
+  cookieDomain: process.env.COOKIE_DOMAIN || "",
 };
