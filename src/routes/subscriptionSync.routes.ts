@@ -2,6 +2,8 @@
 import { Router, Request, Response } from "express";
 import { stripe } from "../stripe/client.js";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requireSubscriptionOwnerOrAdmin } from "../middleware/ownership.js";
 
 const router = Router();
 
@@ -19,7 +21,7 @@ const mapStripeSubStatus = (s: any) => {
   return "INCOMPLETE";
 };
 
-router.get("/:id/sync", async (req: Request, res: Response) => {
+  router.get("/:id/sync", requireAuth, requireSubscriptionOwnerOrAdmin, async (req: Request, res: Response) => {
   const subId = Number(req.params.id);
 
   const r = await pool.query("SELECT * FROM subscriptions WHERE id=$1", [subId]);
