@@ -4,6 +4,7 @@ import { pool } from "../db/pool.js";
 const router = Router();
 
 router.get("/", async (_req, res, next) => {
+
   try {
     const r = await pool.query(
       `SELECT id, name, stripe_price_id, interval, amount_cents, currency

@@ -10,7 +10,6 @@ const router = Router();
 const createSchema = z.object({
   body: z.object({
     userEmail: z.string().email(),
-    // ✅ CHANGE: allow string->number safely
     planId: z.coerce.number().int(),
   }),
 });
@@ -37,12 +36,10 @@ router.post("/checkout", async (req, res, next) => {
     );
     const user = uRes.rows[0];
 
-    // plan -> Stripe price id
     const pRes = await pool.query("SELECT * FROM plans WHERE id=$1 AND active=true", [planId]);
     const plan = pRes.rows[0];
     if (!plan) return next({ status: 404, message: "Plan not found" });
 
-    // ensure Stripe customer
     let customerId = user.stripe_customer_id as string | null;
     if (!customerId) {
       const customer = await stripe.customers.create({ email: user.email });
@@ -50,7 +47,6 @@ router.post("/checkout", async (req, res, next) => {
       await pool.query("UPDATE users SET stripe_customer_id=$1 WHERE id=$2", [customerId, user.id]);
     }
 
-    // create a local subscription record (incomplete until webhook confirms)
     const sRes = await pool.query(
       `INSERT INTO subscriptions(user_id, plan_id, status)
        VALUES($1,$2,'INCOMPLETE')
@@ -58,14 +54,12 @@ router.post("/checkout", async (req, res, next) => {
       [user.id, plan.id]
     );
     const subId = sRes.rows[0].id as number;
-
-    // Stripe Checkout Session in subscription mode
+    
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
 
-      // ✅ include local sub id so frontend can fetch receipt
       success_url: `${env.appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}&sub_id=${subId}`,
       cancel_url: `${env.appUrl}/billing/cancel?sub_id=${subId}`,
 
@@ -110,7 +104,6 @@ router.get("/receipt/:sessionId", requireAuth, async (req, res, next) => {
     const sub = r.rows[0];
     if (!sub) return next({ status: 404, message: "Subscription not found yet" });
 
-    // Ownership check for session-based lookup
     if (req.auth?.role !== "admin" && Number(sub.user_id) !== req.auth?.userId) {
       return next({ status: 403, message: "Forbidden" });
     }

@@ -24,7 +24,6 @@ router.get("/:id/payment-intent", async (req, res, next) => {
       return res.status(400).json({ error: "No Stripe subscription id" });
     }
 
-    // Preferred: subscription.latest_invoice
     const stripeSub = await stripe.subscriptions.retrieve(sub.stripe_subscription_id, {
       expand: [
         "latest_invoice",
@@ -37,7 +36,6 @@ router.get("/:id/payment-intent", async (req, res, next) => {
 
     let inv: any = (stripeSub as any).latest_invoice || null;
 
-    // Fallback: invoices.list -> retrieve with expand
     if (!inv) {
       const invoices = await stripe.invoices.list({
         subscription: sub.stripe_subscription_id,

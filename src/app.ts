@@ -16,13 +16,13 @@ import Refund from "./routes/subscriptionRefundHandle.routes.js"
 import checkoutReceipt from "./routes/checkoutReceipt.routes.js";
 import auth from "./routes/auth.routes.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
+import publicCheckout from "./routes/publicCheckout.routes.js";
 import admin from "./routes/admin.routes.js";
 import plans from "./routes/plans.routes.js";
-
+import {mailer} from "./utils/mailer.js"
 export function createApp(): Express {
   const app = express();
 
-  // ✅ Webhooks FIRST (raw body)
   app.use("/api/webhooks", webhooks);
 
   app.use(pinoHttp());
@@ -43,7 +43,6 @@ export function createApp(): Express {
 
   app.use(cookieParser());
 
-  // ✅ JSON parser AFTER webhooks
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true }));
 
@@ -54,23 +53,24 @@ export function createApp(): Express {
     res.json({ ok: true, message: "Backend Server is Running..." })
   );
 
-
-app.use("/api/auth", auth);
-app.use("/api/plans", plans);
-
-// Public routes FIRST
+// public
 app.use("/api/public", checkoutReceipt);
+app.use("/api/public", publicCheckout);
 
-//Admin locked
+// plans & auth
+app.use("/api/plans", plans);
+app.use("/api/auth", auth);
+
+// checkout is public but still grouped under subscriptions
+app.use("/api/subscriptions", subs); // no requireAuth here
+
+// protected subs operations
+app.use("/api/subscriptions", requireAuth, subscriptionSync);
+app.use("/api/subscriptions", requireAuth, subPI);
+app.use("/api/subscriptions", requireAuth, Refund);
+
+// admin
 app.use("/api/admin", requireAuth, requireRole("admin"), admin);
-
-//Subscriptions locked (or lock inside each route)
-app.use("/api/subscriptions", requireAuth, subs);
-app.use("/api/subscriptions", subscriptionSync);
-app.use("/api/subscriptions", subPI);
-app.use("/api/subscriptions", Refund);
-
-
   app.use(errorHandler);
   return app;
 }
