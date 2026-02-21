@@ -61,10 +61,8 @@ app.use("/api/public", publicCheckout);
 app.use("/api/plans", plans);
 app.use("/api/auth", auth);
 
-// checkout is public but still grouped under subscriptions
-app.use("/api/subscriptions", subs); // no requireAuth here
-
-// protected subs operations
+// ✅ all subscriptions routes require auth
+app.use("/api/subscriptions", requireAuth, subs);
 app.use("/api/subscriptions", requireAuth, subscriptionSync);
 app.use("/api/subscriptions", requireAuth, subPI);
 app.use("/api/subscriptions", requireAuth, Refund);

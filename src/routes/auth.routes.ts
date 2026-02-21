@@ -63,6 +63,47 @@ router.post("/admin/setup", async (req, res, next) => {
     next(e);
   }
 });
+   
+
+router.post("/signup", async (req, res, next) => {
+  try {
+    const schema = z.object({
+      email: z.string().email(),
+      password: z.string().min(8),
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return next({ status: 400, message: "Validation error", details: parsed.error.flatten() });
+
+    const { email, password } = parsed.data;
+
+    // prevent duplicates
+    const exists = await pool.query(`SELECT id FROM users WHERE LOWER(email)=LOWER($1) LIMIT 1`, [email]);
+    if (exists.rowCount) return next({ status: 409, message: "Email already exists" });
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const r = await pool.query(
+      `INSERT INTO users (email, role, password_hash)
+       VALUES ($1, 'user', $2)
+       RETURNING id, email, role`,
+      [email, passwordHash]
+    );
+
+    const user = r.rows[0];
+
+    const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+
+    // create refresh session + cookie (same as login)
+    const refreshRaw = generateRefreshToken();
+    await createRefreshSession({ userId: user.id, refreshRaw, req });
+    res.cookie(REFRESH_COOKIE, refreshRaw, refreshCookieOptions());
+
+    return res.status(201).json({ user, accessToken });
+  } catch (e) {
+    next(e);
+  }
+});
 
 router.post("/login", loginLimiter, async (req, res, next) => {
   try {
@@ -169,6 +210,10 @@ router.post("/logout", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+router.get("/me", requireAuth, async (req, res) => {
+  return res.json({ user: req.auth });
 });
 
 
