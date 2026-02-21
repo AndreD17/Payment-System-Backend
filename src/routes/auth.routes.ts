@@ -25,7 +25,6 @@ async function createRefreshSession(params: { userId: number; refreshRaw: string
 
 router.post("/admin/setup", async (req, res, next) => {
   try {
-    // Optional hardening: disable in production
     if (process.env.NODE_ENV === "production") return next({ status: 403, message: "Disabled in production" });
 
     const schema = z.object({
@@ -172,8 +171,5 @@ router.post("/logout", async (req, res, next) => {
   }
 });
 
-router.get("/me", requireAuth, async (req, res) => {
-  res.json({ user: req.auth });
-});
 
 export default router;

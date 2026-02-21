@@ -46,7 +46,6 @@ router.get("/:id/payment-intent", requireAuth, requireSubscriptionOwnerOrAdmin, 
       return res.status(400).json({ error: "No Stripe subscription id" });
     }
 
-    // 1) Latest invoice (lite)
     const invoices = await stripe.invoices.list({
       subscription: sub.stripe_subscription_id,
       limit: 1,

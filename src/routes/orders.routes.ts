@@ -14,7 +14,7 @@ const createOrderSchema = z.object({
     items: z.array(
       z.object({
         name: z.string().min(2),
-        unitAmount: z.number().int().min(50), // cents, min 0.50 for demo
+        unitAmount: z.number().int().min(50), 
         quantity: z.number().int().min(1).max(99),
       })
     ).min(1),
@@ -87,7 +87,7 @@ router.post("/", validate(createOrderSchema), async (req, res, next) => {
     res.status(201).json({
       orderId: order.id,
       checkoutSessionId: session.id,
-      checkoutUrl: session.url, // redirect user to Stripe-hosted checkout
+      checkoutUrl: session.url,
     });
   } catch (e) {
     try { await client.query("ROLLBACK"); } catch {}
