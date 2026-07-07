@@ -1,11 +1,18 @@
 import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { sendEmail } from "../utils/mailer.js";
 import { pool } from "../db/pool.js";
 import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
-import { signAccessToken, generateRefreshToken, hashToken, refreshCookieOptions } from "../auth/tokens.js";
+import {
+  signAccessToken,
+  generateRefreshToken,
+  hashToken,
+  refreshCookieOptions,
+} from "../auth/tokens.js";
 
 const router = Router();
 const REFRESH_COOKIE = "refresh_token";
@@ -19,180 +26,207 @@ async function createRefreshSession(params: { userId: number; refreshRaw: string
   await pool.query(
     `INSERT INTO refresh_sessions (user_id, token_hash, expires_at, user_agent, ip)
      VALUES ($1, $2, $3, $4, $5)`,
-    [params.userId, refreshHash, refreshExpiryDate(), params.req.get("user-agent") || null, params.req.ip]
+    [
+      params.userId,
+      refreshHash,
+      refreshExpiryDate(),
+      params.req.get("user-agent") || null,
+      params.req.ip,
+    ]
   );
 }
 
-router.post("/admin/setup", async (req, res, next) => {
-  try {
-    if (process.env.NODE_ENV === "production") return next({ status: 403, message: "Disabled in production" });
+function apiError(
+  status: number,
+  message: string,
+  alert?: { type: "error" | "info" | "success"; title: string; message: string; field?: string }
+) {
+  return { status, message, alert };
+}
 
-    const schema = z.object({
-      email: z.string().email(),
-      password: z.string().min(8),
-      setupKey: z.string().min(6),
-    });
-
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return next({ status: 400, message: "Validation error", details: parsed.error.flatten() });
-
-    if (parsed.data.setupKey !== env.adminApiKey) return next({ status: 403, message: "Invalid setup key" });
-
-    const existingAdmin = await pool.query(`SELECT id FROM users WHERE role='admin' LIMIT 1`);
-    if (existingAdmin.rows[0]) return next({ status: 409, message: "Admin already exists" });
-
-    const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-
-    const r = await pool.query(
-      `INSERT INTO users (email, role, password_hash)
-       VALUES ($1, 'admin', $2)
-       RETURNING id, email, role`,
-      [parsed.data.email, passwordHash]
-    );
-
-    const admin = r.rows[0] as { id: number; email: string; role: string };
-
-    const accessToken = signAccessToken({ userId: admin.id, email: admin.email, role: admin.role });
-
-    const refreshRaw = generateRefreshToken();
-    await createRefreshSession({ userId: admin.id, refreshRaw, req });
-
-    res.cookie(REFRESH_COOKIE, refreshRaw, refreshCookieOptions());
-    return res.status(201).json({ user: admin, accessToken });
-  } catch (e) {
-    next(e);
-  }
+// -------------------- SIGNUP --------------------
+const signupSchema = z.object({
+  email: z.string().trim().email("Enter a valid email address."),
+  password: z.string().min(8, "Password must be at least 8 characters."),
+  username: z
+    .string()
+    .trim()
+    .min(3, "Username must be at least 3 characters.")
+    .max(20, "Username must be at most 20 characters.")
+    .regex(/^[a-zA-Z0-9_]+$/, "Username can only contain letters, numbers, and underscore.")
+    .refine((v) => !/^\d+$/.test(v), "Username cannot be only numbers.")
+    .transform((v) => v.toLowerCase()),
 });
-   
 
 router.post("/signup", async (req, res, next) => {
   try {
-    const schema = z.object({
-      email: z.string().email(),
-      password: z.string().min(8),
-    });
+    const parsed = signupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: "Validation error",
+        details: parsed.error.flatten(),
+        alert: {
+          type: "error",
+          title: "Fix the form",
+          message: "Please correct the highlighted fields and try again.",
+        },
+      });
+    }
 
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return next({ status: 400, message: "Validation error", details: parsed.error.flatten() });
+    const { email, password, username } = parsed.data;
 
-    const { email, password } = parsed.data;
+    // Check email exists
+    const emailExists = await pool.query(
+      `SELECT id FROM users WHERE LOWER(email)=LOWER($1) LIMIT 1`,
+      [email]
+    );
 
-    // prevent duplicates
-    const exists = await pool.query(`SELECT id FROM users WHERE LOWER(email)=LOWER($1) LIMIT 1`, [email]);
-    if (exists.rowCount) return next({ status: 409, message: "Email already exists" });
+    if (emailExists.rows[0]) {
+      return res.status(409).json({
+        message: "User already exists",
+        alert: {
+          type: "error",
+          title: "Email already registered",
+          message: "This email is already registered. Please login instead.",
+          field: "email",
+        },
+      });
+    }
+
+    // Check username exists (case-insensitive by storing lowercase + lower(username))
+    const usernameExists = await pool.query(
+      `SELECT id FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1`,
+      [username]
+    );
+
+    if (usernameExists.rows[0]) {
+      return res.status(409).json({
+        message: "Username already taken",
+        alert: {
+          type: "error",
+          title: "Username unavailable",
+          message: "That username is taken. Try another one.",
+          field: "username",
+        },
+      });
+    }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
     const r = await pool.query(
-      `INSERT INTO users (email, role, password_hash)
-       VALUES ($1, 'user', $2)
-       RETURNING id, email, role`,
-      [email, passwordHash]
+      `INSERT INTO users (email, username, role, password_hash)
+       VALUES ($1, $2, 'user', $3)
+       RETURNING id, email, username, role`,
+      [email, username, passwordHash]
     );
 
-    const user = r.rows[0];
+    const user = r.rows[0] as { id: number; email: string; username: string; role: string };
 
-    const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+    const accessToken = signAccessToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+    });
 
-    // create refresh session + cookie (same as login)
     const refreshRaw = generateRefreshToken();
     await createRefreshSession({ userId: user.id, refreshRaw, req });
     res.cookie(REFRESH_COOKIE, refreshRaw, refreshCookieOptions());
 
-    return res.status(201).json({ user, accessToken });
-  } catch (e) {
+    return res.status(201).json({
+      user,
+      accessToken,
+      alert: {
+        type: "success",
+        title: "Account created",
+        message: "Welcome! Your account has been created successfully.",
+      },
+    });
+  } catch (e: any) {
+    // If DB unique index triggers (race condition), catch and return friendly errors
+    if (e?.code === "23505") {
+      const detail = String(e?.detail || "");
+      if (detail.toLowerCase().includes("users_email_lower_unique")) {
+        return res.status(409).json({
+          message: "User already exists",
+          alert: {
+            type: "error",
+            title: "Email already registered",
+            message: "This email is already registered. Please login instead.",
+            field: "email",
+          },
+        });
+      }
+      if (detail.toLowerCase().includes("users_username_lower_unique")) {
+        return res.status(409).json({
+          message: "Username already taken",
+          alert: {
+            type: "error",
+            title: "Username unavailable",
+            message: "That username is taken. Try another one.",
+            field: "username",
+          },
+        });
+      }
+    }
+
     next(e);
   }
+});
+
+// -------------------- LOGIN --------------------
+const loginSchema = z.object({
+  email: z.string().trim().email("Enter a valid email address."),
+  password: z.string().min(1, "Password is required."),
 });
 
 router.post("/login", loginLimiter, async (req, res, next) => {
   try {
-    const schema = z.object({ email: z.string().email(), password: z.string().min(1) });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return next({ status: 400, message: "Validation error", details: parsed.error.flatten() });
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: "Validation error",
+        details: parsed.error.flatten(),
+        alert: { type: "error", title: "Fix the form", message: "Enter email and password." },
+      });
+    }
 
     const { email, password } = parsed.data;
 
-        const r = await pool.query(
-    `SELECT id, email, role, password_hash
-    FROM users
-    WHERE LOWER(email) = LOWER($1)
-    LIMIT 1`,
-    [email]
+    const r = await pool.query(
+      `SELECT id, email, username, role, password_hash
+       FROM users
+       WHERE LOWER(email) = LOWER($1)
+       LIMIT 1`,
+      [email]
     );
 
-    const user = r.rows[0] as any;
-    if (!user || !user.password_hash) return next({ status: 401, message: "Invalid credentials" });
+    const user = r.rows[0];
 
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return next({ status: 401, message: "Invalid credentials" });
+    const ok =
+      user?.password_hash ? await bcrypt.compare(password, user.password_hash) : false;
+
+    if (!ok) {
+      return res.status(401).json({
+        message: "Invalid credentials",
+        alert: {
+          type: "error",
+          title: "Login failed",
+          message: "The email or password you entered is incorrect.",
+        },
+      });
+    }
 
     const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
 
     const refreshRaw = generateRefreshToken();
     await createRefreshSession({ userId: user.id, refreshRaw, req });
-
     res.cookie(REFRESH_COOKIE, refreshRaw, refreshCookieOptions());
-    return res.json({ user: { id: user.id, email: user.email, role: user.role }, accessToken });
-  } catch (e) {
-    next(e);
-  }
-});
 
-router.post("/refresh", async (req, res, next) => {
-  try {
-    const refreshRaw = req.cookies?.[REFRESH_COOKIE];
-    if (!refreshRaw) return next({ status: 401, message: "Missing refresh token" });
-
-    const currentHash = hashToken(String(refreshRaw));
-
-    const s = await pool.query(
-      `SELECT id, user_id, revoked_at, expires_at
-       FROM refresh_sessions
-       WHERE token_hash=$1
-       LIMIT 1`,
-      [currentHash]
-    );
-
-    const session = s.rows[0];
-    if (!session) return next({ status: 401, message: "Invalid refresh token" });
-
-    if (session.revoked_at) {
-      await pool.query(`UPDATE refresh_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, [
-        session.user_id,
-      ]);
-      return next({ status: 401, message: "Refresh token reuse detected" });
-    }
-
-    if (new Date(session.expires_at).getTime() < Date.now()) {
-      return next({ status: 401, message: "Refresh token expired" });
-    }
-
-    const u = await pool.query(`SELECT id, email, role FROM users WHERE id=$1 LIMIT 1`, [session.user_id]);
-    const user = u.rows[0];
-    if (!user) return next({ status: 401, message: "User not found" });
-
-    // rotate refresh
-    const newRefreshRaw = generateRefreshToken();
-    const newHash = hashToken(newRefreshRaw);
-
-    await pool.query(
-      `UPDATE refresh_sessions
-       SET revoked_at=now(), replaced_by_hash=$1
-       WHERE id=$2`,
-      [newHash, session.id]
-    );
-
-    await pool.query(
-      `INSERT INTO refresh_sessions (user_id, token_hash, expires_at, user_agent, ip)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [user.id, newHash, refreshExpiryDate(), req.get("user-agent") || null, req.ip]
-    );
-
-    res.cookie(REFRESH_COOKIE, newRefreshRaw, refreshCookieOptions());
-
-    const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
-    return res.json({ accessToken });
+    return res.json({
+      user: { id: user.id, email: user.email, username: user.username, role: user.role },
+      accessToken,
+      alert: { type: "success", title: "Welcome back", message: "Logged in successfully." },
+    });
   } catch (e) {
     next(e);
   }
@@ -216,5 +250,61 @@ router.get("/me", requireAuth, async (req, res) => {
   return res.json({ user: req.auth });
 });
 
+const forgotSchema = z.object({
+  email: z.string().trim().email(),
+});
+
+
+
+const resetSchema = z.object({
+  token: z.string().min(10),
+  password: z.string().min(8),
+});
+
+router.post("/reset-password", async (req, res, next) => {
+  try {
+    const parsed = resetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid input" });
+    }
+
+    const { token, password } = parsed.data;
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    const userRes = await pool.query(
+      `SELECT id
+       FROM users
+       WHERE reset_password_token=$1
+       AND reset_password_expires > NOW()
+       LIMIT 1`,
+      [hashedToken]
+    );
+
+    const user = userRes.rows[0];
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid or expired token" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    await pool.query(
+      `UPDATE users
+       SET password_hash=$1,
+           reset_password_token=NULL,
+           reset_password_expires=NULL
+       WHERE id=$2`,
+      [passwordHash, user.id]
+    );
+
+    return res.json({ message: "Password reset successful" });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

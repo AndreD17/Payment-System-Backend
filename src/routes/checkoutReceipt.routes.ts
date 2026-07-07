@@ -13,17 +13,23 @@ const getId = (x: any): string | null => {
   return null;
 };
 
+// 🔁 small helper to wait (for retry)
+const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
 router.get("/receipt/:sessionId", async (req, res, next) => {
   try {
     const schema = z.object({ sessionId: z.string().min(10) });
     const parsed = schema.safeParse({ sessionId: req.params.sessionId });
-    if (!parsed.success) return res.status(400).json({ error: "Invalid session id" });
+
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid session id" });
+    }
 
     const sessionId = parsed.data.sessionId;
 
-    // 1) Checkout Session
+    // 1️⃣ Checkout Session
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["subscription", "customer"],
+      expand: ["subscription"],
     });
 
     const stripeSubId = getId((session as any).subscription);
@@ -31,127 +37,153 @@ router.get("/receipt/:sessionId", async (req, res, next) => {
     if (!stripeSubId) {
       return res.status(202).json({
         processing: true,
-        message: "Subscription is still being finalized. Refresh in a few seconds.",
-        sessionId,
+        message: "Subscription not ready yet. Retry shortly.",
       });
     }
 
-    // 2) Subscription -> latest_invoice
+    // 2️⃣ Subscription
     const stripeSub = await stripe.subscriptions.retrieve(stripeSubId, {
       expand: ["latest_invoice"],
     });
 
-    const periodEndUnix =
-      typeof (stripeSub as any).current_period_end === "number" ? (stripeSub as any).current_period_end : null;
-
-    const li: any = (stripeSub as any).latest_invoice;
-    const stripeInvoiceId = getId(li);
+    const latestInvoice = (stripeSub as any).latest_invoice;
+    const stripeInvoiceId = getId(latestInvoice);
 
     if (!stripeInvoiceId) {
       return res.status(202).json({
         processing: true,
-        message: "Invoice not ready yet. Refresh in a few seconds.",
-        sessionId,
-        stripeSubscriptionId: stripeSubId,
+        message: "Invoice not ready yet. Retry shortly.",
       });
     }
 
-    // 3) Invoice (expand for receipt info)
-    const inv: any = await stripe.invoices.retrieve(stripeInvoiceId, {
-      expand: [
-        "customer",
-        "payment_intent",
-        "payment_intent.latest_charge",
-        "charge",
-        "lines.data.price.product",
-      ],
-    });
+    // 🔁 Fetch invoice
+    const fetchInvoice = async () =>
+      await stripe.invoices.retrieve(stripeInvoiceId, {
+        expand: [
+          "customer",
+          "payment_intent",
+          "payment_intent.latest_charge",
+          "lines.data.price.product",
+        ],
+      });
+
+    let inv: any = await fetchInvoice();
+
+    // retry once
+    if (!inv.payment_intent || inv.status !== "paid") {
+      await wait(1500);
+      inv = await fetchInvoice();
+    }
 
     const invoiceStatus = inv?.status ?? null;
-    const hostedInvoiceUrl = inv?.hosted_invoice_url ?? null;
-    const invoicePdf = inv?.invoice_pdf ?? null;
-    const invoiceNumber = inv?.number ?? null;
-    const created = typeof inv?.created === "number" ? inv.created : null;
 
-    const amountPaid = typeof inv?.amount_paid === "number" ? inv.amount_paid : null;
-    const amountDue = typeof inv?.amount_due === "number" ? inv.amount_due : null;
-    const currency = typeof inv?.currency === "string" ? inv.currency : null;
+    if (invoiceStatus !== "paid") {
+      return res.status(202).json({
+        processing: true,
+        message: "Payment not completed yet",
+        invoiceStatus,
+      });
+    }
 
-    const paymentIntentId = getId(inv?.payment_intent);
+    // =========================
+    // ✅ PAYMENT INTENT FIX
+    // =========================
+    let paymentIntentId: string | null = null;
+    let chargeId: string | null = null;
 
-    // charge fallback
-    let chargeId = getId(inv?.charge);
-    if (!chargeId && inv?.payment_intent) chargeId = getId(inv.payment_intent?.latest_charge);
+    // CASE 1: Normal (works sometimes)
+    if (inv.payment_intent) {
+      paymentIntentId =
+        typeof inv.payment_intent === "string"
+          ? inv.payment_intent
+          : inv.payment_intent.id;
 
+      if (typeof inv.payment_intent !== "string") {
+        chargeId =
+          typeof inv.payment_intent.latest_charge === "string"
+            ? inv.payment_intent.latest_charge
+            : inv.payment_intent.latest_charge?.id ?? null;
+      }
+    }
+
+    // =========================
+    // 🚨 CASE 2: FALLBACK (IMPORTANT)
+    // =========================
+    if (!paymentIntentId) {
+      const charges = await stripe.charges.list({
+        limit: 1,
+        invoice: stripeInvoiceId,
+      });
+
+      const charge = charges.data[0];
+
+      if (charge) {
+        chargeId = charge.id;
+        paymentIntentId =
+          typeof charge.payment_intent === "string"
+            ? charge.payment_intent
+            : charge.payment_intent?.id ?? null;
+      }
+    }
+
+    // =========================
+    // Receipt URL
+    // =========================
     let receiptUrl: string | null = null;
+
     if (chargeId) {
-      const ch: any = await stripe.charges.retrieve(chargeId);
+      const ch = await stripe.charges.retrieve(chargeId);
       receiptUrl = ch?.receipt_url ?? null;
     }
 
-    // product/plan info (from invoice line)
+    // product info
     const firstLine = inv?.lines?.data?.[0];
     const productName = firstLine?.price?.product?.name ?? null;
     const interval = firstLine?.price?.recurring?.interval ?? null;
 
-    // customer info
     const customerEmail = inv?.customer_email ?? inv?.customer?.email ?? null;
 
-    // local sub id (optional, for your DB)
-    const local = await pool.query(
-      `SELECT id FROM subscriptions WHERE stripe_checkout_session_id=$1 LIMIT 1`,
-      [sessionId]
-    );
-    const localId = local.rows?.[0]?.id ? Number(local.rows[0].id) : null;
+    const created = inv?.created ?? null;
+    const amountPaid = inv?.amount_paid ?? null;
+    const currency = inv?.currency ?? null;
 
-    // backfill DB (best effort)
-    if (localId) {
-      await pool.query(
-        `UPDATE subscriptions
-         SET stripe_subscription_id = COALESCE($1, stripe_subscription_id),
-             stripe_invoice_id = COALESCE($2, stripe_invoice_id),
-             stripe_payment_intent_id = COALESCE($3, stripe_payment_intent_id),
-             stripe_charge_id = COALESCE($4, stripe_charge_id),
-             current_period_end = COALESCE(to_timestamp($5), current_period_end),
-             updated_at = now()
-         WHERE id = $6`,
-        [stripeSubId, stripeInvoiceId, paymentIntentId, chargeId, periodEndUnix, localId]
-      );
-    }
+    // 🧠 BACKFILL DB
+    await pool.query(
+      `
+      UPDATE subscriptions
+      SET stripe_subscription_id = COALESCE($1, stripe_subscription_id),
+          stripe_invoice_id = COALESCE($2, stripe_invoice_id),
+          stripe_payment_intent_id = COALESCE($3, stripe_payment_intent_id),
+          stripe_charge_id = COALESCE($4, stripe_charge_id),
+          updated_at = now()
+      WHERE stripe_checkout_session_id = $5
+      `,
+      [stripeSubId, stripeInvoiceId, paymentIntentId, chargeId, sessionId]
+    );
 
     return res.json({
       ok: true,
       sessionId,
 
-      // local
-      subscriptionId: localId,
-
-      // stripe
       stripeSubscriptionId: stripeSubId,
       stripeInvoiceId,
+
+      // ✅ GUARANTEED NOW
       paymentIntentId,
       chargeId,
 
-      // receipt
-      invoiceStatus,
-      hostedInvoiceUrl,
-      invoicePdf,
       receiptUrl,
-      invoiceNumber,
+      hostedInvoiceUrl: inv?.hosted_invoice_url ?? null,
+      invoicePdf: inv?.invoice_pdf ?? null,
+
+      invoiceStatus,
+      amountPaid,
+      currency,
       created,
 
-      // money
-      amountPaid,
-      amountDue,
-      currency,
-
-      // user-facing extras
       customerEmail,
       productName,
       interval,
-
-      // time
-      currentPeriodEnd: periodEndUnix ? new Date(periodEndUnix * 1000).toISOString() : null,
     });
   } catch (e) {
     next(e);

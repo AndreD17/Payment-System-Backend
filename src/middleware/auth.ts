@@ -4,6 +4,7 @@ import { env } from "../config/env.js";
 
 export type Role = "user" | "admin";
 
+//Authenticated user schema 
 export type AuthUser = {
   userId: number;
   email: string;
@@ -18,6 +19,7 @@ declare global {
   }
 }
 
+//Get bearer token function
 function getBearerToken(req: Request): string | null {
   const h = req.header("authorization");
   if (!h) return null;
@@ -26,16 +28,19 @@ function getBearerToken(req: Request): string | null {
   return token;
 }
 
+//Authentication middleware for users 
 export function requireAuth(req: Request, _res: Response, next: NextFunction) {
   try {
     const token = getBearerToken(req);
     if (!token) return next({ status: 401, message: "Missing Authorization: Bearer <token>" });
 
+    //Bearer token payload
     const payload = jwt.verify(token, env.jwtSecret, {
       issuer: env.jwtIssuer,
       audience: env.jwtAudience,
     }) as any;
 
+    //Require authentication for both user and admin
     req.auth = {
       userId: Number(payload.userId),
       email: String(payload.email),
