@@ -106,9 +106,7 @@ router.get("/receipt/:sessionId", async (req, res, next) => {
       }
     }
 
-    // =========================
-    // 🚨 CASE 2: FALLBACK (IMPORTANT)
-    // =========================
+    // CASE 2: Backfill (if payment_intent is missing)
     if (!paymentIntentId) {
       const charges = await stripe.charges.list({
         limit: 1,
@@ -126,9 +124,7 @@ router.get("/receipt/:sessionId", async (req, res, next) => {
       }
     }
 
-    // =========================
-    // Receipt URL
-    // =========================
+    
     let receiptUrl: string | null = null;
 
     if (chargeId) {

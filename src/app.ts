@@ -2,10 +2,11 @@ import express, { Express, Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
-import pinoHttp from "pino-http";
 
 import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/error.js";
+import { loggerMiddleware } from "./middleware/logger.middleware.js";
+import logger from "./utils/logger.js";
 
 import webhooks from "./routes/webhooks.routes.js";
 import subs from "./routes/subscriptions.routes.js";
@@ -29,9 +30,12 @@ export function createApp(): Express {
     webhooks
   );
 
-  app.use(pinoHttp());
+  // ✅ Use your custom logger instead of pinoHttp
+  app.use(loggerMiddleware);
+
   app.use(helmet());
 
+  // ✅ CORS configuration
   const allowedOrigins = [env.appUrl, "http://localhost:5173"].filter(Boolean);
 
   const corsOptions = {
@@ -48,9 +52,6 @@ export function createApp(): Express {
   };
 
   app.use(cors(corsOptions));
-
-  // ✅ REMOVE THIS LINE - it's causing the error
-  // app.options("*", cors(corsOptions));  // DELETE THIS
 
   app.use(cookieParser());
   app.use(express.json({ limit: "1mb" }));
