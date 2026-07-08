@@ -1,4 +1,4 @@
+
+node_modules/
 .env
-.env.*
-*.pem
-node_modules
+dist/
