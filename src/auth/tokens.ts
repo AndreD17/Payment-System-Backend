@@ -20,10 +20,12 @@ export function hashToken(token: string) {
 
 export function refreshCookieOptions() {
   const isProd = process.env.NODE_ENV === "production";
+  const secure = env.cookieSecure || isProd || env.cookieSameSite === "none";
+
   return {
     httpOnly: true,
-    secure: env.cookieSecure || isProd,
-    sameSite: "lax" as const,
+    secure,
+    sameSite: env.cookieSameSite,
     path: "/api/auth",
     ...(env.cookieDomain ? { domain: env.cookieDomain } : {}),
   };

@@ -54,6 +54,7 @@ export function loggerMiddleware(req: Request, res: Response, next: NextFunction
         if (body.alert) logData.alert = body.alert;
       } catch {
         // Not JSON
+        
       }
     }
 

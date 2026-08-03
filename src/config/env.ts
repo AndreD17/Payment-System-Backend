@@ -38,12 +38,14 @@ export const env = {
 
   adminApiKey: must("ADMIN_API_KEY"),
 
-  smtpHost: must("SMTP_HOST"),
-  smtpPort: num("SMTP_PORT"),
+  smtpHost: process.env.SMTP_HOST || "",
+  smtpPort: Number(process.env.SMTP_PORT || 587),
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   smtpSecure: process.env.SMTP_SECURE === "true",
   emailFrom: must("EMAIL_FROM"),
+  sendgridApiKey: process.env.SENDGRID_API_KEY || "",
+  mailProvider: (process.env.MAIL_PROVIDER as "sendgrid" | "smtp" | "auto") || "auto",
 
   jwtSecret: must("JWT_SECRET"),
   jwtIssuer: process.env.JWT_ISSUER || "payment-system",
@@ -53,5 +55,6 @@ export const env = {
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30),
 
   cookieSecure: process.env.COOKIE_SECURE === "true",
+  cookieSameSite: (process.env.COOKIE_SAME_SITE as "lax" | "strict" | "none") || "lax",
   cookieDomain: process.env.COOKIE_DOMAIN || "",
 };

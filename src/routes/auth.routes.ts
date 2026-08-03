@@ -274,6 +274,54 @@ router.post("/login", loginLimiter, async (req, res, next) => {
   }
 });
 
+// ---------- REFRESH TOKEN ----------
+router.post("/refresh", async (req, res, next) => {
+  try {
+    const refreshRaw = req.cookies?.[REFRESH_COOKIE];
+    if (!refreshRaw) {
+      return res.status(401).json({ message: "Missing refresh token" });
+    }
+
+    const refreshHash = hashToken(String(refreshRaw));
+    const result = await pool.query(
+      `SELECT rs.id AS session_id, u.id AS user_id, u.email, u.role
+       FROM refresh_sessions rs
+       JOIN users u ON u.id = rs.user_id
+       WHERE rs.token_hash = $1
+         AND rs.revoked_at IS NULL
+         AND rs.expires_at > NOW()
+       LIMIT 1`,
+      [refreshHash]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return res.status(401).json({ message: "Invalid refresh token" });
+    }
+
+    const accessToken = signAccessToken({
+      userId: row.user_id,
+      email: row.email,
+      role: row.role,
+    });
+
+    await pool.query(
+      `UPDATE refresh_sessions
+       SET revoked_at = NOW()
+       WHERE id = $1`,
+      [row.session_id]
+    );
+
+    const newRefreshRaw = generateRefreshToken();
+    await createRefreshSession({ userId: row.user_id, refreshRaw: newRefreshRaw, req });
+    res.cookie(REFRESH_COOKIE, newRefreshRaw, refreshCookieOptions());
+
+    return res.json({ accessToken });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ---------- LOGOUT ----------
 router.post("/logout", async (req, res, next) => {
   try {

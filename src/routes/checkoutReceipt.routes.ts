@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { stripe } from "../stripe/client.js";
+import { cacheMiddleware } from "../middleware/cache.js";
 
 const router = Router();
 
@@ -16,7 +17,7 @@ const getId = (x: any): string | null => {
 // 🔁 small helper to wait (for retry)
 const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
-router.get("/receipt/:sessionId", async (req, res, next) => {
+router.get("/receipt/:sessionId", cacheMiddleware(15), async (req, res, next) => {
   try {
     const schema = z.object({ sessionId: z.string().min(10) });
     const parsed = schema.safeParse({ sessionId: req.params.sessionId });

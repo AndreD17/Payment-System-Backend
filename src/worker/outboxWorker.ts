@@ -1,25 +1,24 @@
 import { pool } from "../db/pool.js";
 import { claimIdempotencyKey } from "../utils/idempotency.js";
-import { sendEmail } from "../utils/mailer.js"
+import { sendEmail } from "../utils/mailer.js";
+
 async function handleJob(job: any) {
   if (job.type === "EMAIL_RECEIPT") {
     const payload = job.payload;
-    const userRes = await pool.query("SELECT email FROM users WHERE id=$1", [payload.userId]);
-    const email = userRes.rows[0]?.email;
+    const to = payload?.to;
+    const subject = payload?.subject;
+    const html = payload?.html;
 
-    if (!email) throw new Error(`No email for userId=${payload.userId}`);
+    if (!to || !subject || !html) {
+      throw new Error("Outbox email payload is incomplete");
+    }
 
-    await sendEmail({
-      to: email,
-      subject: "Payment receipt",
-      html: `Thanks! Invoice: ${payload.invoiceId}\nPaid: ${payload.amountPaid} ${payload.currency}`,
-    });
+    await sendEmail({ to, subject, html });
     return;
   }
 
   if (job.type === "FULFILL_SUBSCRIPTION") {
     const payload = job.payload;
-
     const key = `FULFILLMENT:${payload.invoiceId}`;
     const claimed = await claimIdempotencyKey(key, "FULFILLMENT");
     if (claimed) console.log("✅ Fulfilled subscription for invoice:", payload.invoiceId);
@@ -49,21 +48,23 @@ export function startOutboxWorker() {
         return;
       }
 
-      // mark all selected jobs as PROCESSING
       const ids = jobRes.rows.map((r: any) => r.id);
-      await client.query(`UPDATE outbox SET status='PROCESSING' WHERE id = ANY($1)`, [ids]);
+      await client.query(
+        `UPDATE outbox
+         SET status='PROCESSING'
+         WHERE id = ANY($1)`,
+        [ids]
+      );
 
       await client.query("COMMIT");
 
-      // process each job
       for (const job of jobRes.rows) {
         try {
           await handleJob(job);
-          await pool.query("UPDATE outbox SET status='DONE' WHERE id=$1", [job.id]);
+          await client.query("UPDATE outbox SET status='DONE' WHERE id=$1", [job.id]);
         } catch (err: any) {
           const msg = String(err?.message ?? err);
-
-          await pool.query(
+          await client.query(
             `UPDATE outbox
              SET status='PENDING',
                  attempts = attempts + 1,
@@ -72,7 +73,6 @@ export function startOutboxWorker() {
              WHERE id = $1`,
             [job.id, msg]
           );
-
           console.error("Outbox job failed:", { id: job.id, type: job.type, msg });
         }
       }
@@ -84,5 +84,5 @@ export function startOutboxWorker() {
     } finally {
       client.release();
     }
-  }, 2000);
+  }, 10000);
 }

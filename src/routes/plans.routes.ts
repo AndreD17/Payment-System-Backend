@@ -1,9 +1,24 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import { cacheMiddleware } from "../middleware/cache.js";
 import { z } from "zod";
 
 const router = Router();
+
+router.get("/", cacheMiddleware(30), async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, stripe_price_id, interval, amount_cents, currency, active
+       FROM plans
+       WHERE active=true
+       ORDER BY amount_cents ASC`
+    );
+    return res.json({ plans: result.rows });
+  } catch (e) {
+    next(e);
+  }
+});
 
 router.post("/", requireAuth, async (req, res, next) => {
   try {

@@ -153,7 +153,26 @@ SMTP_HOST=localhost
 SMTP_PORT=1025
 SMTP_USER=
 SMTP_PASS=
+SENDGRID_API_KEY=
+MAIL_PROVIDER=auto
+COOKIE_SECURE=false
+COOKIE_SAME_SITE=lax
+COOKIE_DOMAIN=
 ````
+
+---
+
+## 🧪 Testing
+
+Install the backend dev dependencies and run tests from the `Backend` directory:
+
+```bash
+cd Backend
+npm install
+npm test
+```
+
+The backend uses Jest with `ts-jest` and `@types/jest` for TypeScript test support.
 
 ---
 
@@ -161,8 +180,10 @@ SMTP_PASS=
 
 ### Authentication
 
-POST /api/auth/register
+POST /api/auth/signup
 POST /api/auth/login
+POST /api/auth/refresh
+POST /api/auth/logout
 GET  /api/auth/me
 
 ### Plans

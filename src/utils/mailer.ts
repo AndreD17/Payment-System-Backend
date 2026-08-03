@@ -2,20 +2,18 @@ import nodemailer from "nodemailer";
 import sgMail from "@sendgrid/mail";
 import { env } from "../config/env.js";
 
-// Initialize SendGrid only if API key is available
-const sendgridApiKey = (env as any).sendgridApiKey;
+const sendgridApiKey = env.sendgridApiKey;
+const mailProvider = env.mailProvider;
+
 if (sendgridApiKey) {
   sgMail.setApiKey(sendgridApiKey);
 }
 
-// fallback transporter (dev)
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  auth: {
-    user: env.smtpUser,
-    pass: env.smtpPass,
-  },
+const smtpTransporter = nodemailer.createTransport({
+  host: env.smtpHost || "smtp.gmail.com",
+  port: env.smtpPort,
+  secure: env.smtpSecure,
+  auth: env.smtpUser && env.smtpPass ? { user: env.smtpUser, pass: env.smtpPass } : undefined,
 });
 
 type EmailPayload = {
@@ -24,26 +22,39 @@ type EmailPayload = {
   html: string;
 };
 
+function shouldUseSendGrid() {
+  if (mailProvider === "sendgrid") return Boolean(sendgridApiKey);
+  if (mailProvider === "smtp") return false;
+  return Boolean(sendgridApiKey);
+}
+
 export async function sendEmail({ to, subject, html }: EmailPayload) {
   try {
-    // PRIMARY: SendGrid (production)
-    if (sendgridApiKey) {
+    if (shouldUseSendGrid()) {
+      if (!sendgridApiKey) {
+        throw new Error("SendGrid API key is missing");
+      }
       await sgMail.send({
         to,
         from: env.emailFrom,
         subject,
         html,
       });
+      console.info("Email sent via SendGrid to", to);
       return;
     }
 
-    // FALLBACK: Nodemailer
-    await transporter.sendMail({
+    if (!env.smtpHost || !env.smtpUser || !env.smtpPass) {
+      throw new Error("SMTP provider is not configured");
+    }
+
+    await smtpTransporter.sendMail({
       from: env.emailFrom,
       to,
       subject,
       html,
     });
+    console.info("Email sent via SMTP to", to);
   } catch (err) {
     console.error("Email error:", err);
     throw new Error("Email sending failed");

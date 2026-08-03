@@ -5,7 +5,7 @@ import Stripe from "stripe";
 import { stripe } from "../stripe/client.js";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
-import { sendEmail } from "../utils/mailer.js";
+import { enqueueOutbox } from "../utils/outbox.js";
 
 const router = Router();
 
@@ -345,38 +345,33 @@ router.post(
 
         case "invoice.paid":
         case "invoice.payment_succeeded": {
-  const inv = event.data.object as Stripe.Invoice;
+          const inv = event.data.object as Stripe.Invoice;
 
-  await syncFromInvoice(inv.id, eventType, event.id);
+          await syncFromInvoice(inv.id, eventType, event.id);
 
-  // ✅ SEND EMAIL HERE
-  const customerEmail =
-    inv.customer_email ||
-    (inv.customer as any)?.email ||
-    null;
+          const customerEmail =
+            inv.customer_email ||
+            (inv.customer as any)?.email ||
+            null;
 
-    if (customerEmail && inv.status === "paid") {
-      try {
-        await sendEmail({
-          to: customerEmail,
-          subject: `Payment Receipt - ${inv.number}`,
-          html: `
-            <h2>🎉 Payment Successful</h2>
-            <p><b>Invoice:</b> ${inv.number}</p>
-            <p><b>Amount Paid:</b> ${inv.amount_paid / 100} ${inv.currency?.toUpperCase()}</p>
-            <p><b>Status:</b> ${inv.status}</p>
-            <p><a href="${inv.invoice_pdf}">Download Receipt</a></p>
-          `,
-        });
+          if (customerEmail && inv.status === "paid") {
+            await enqueueOutbox("EMAIL_RECEIPT", {
+              to: customerEmail,
+              subject: `Payment Receipt - ${inv.number}`,
+              html: `
+                <h2>🎉 Payment Successful</h2>
+                <p><b>Invoice:</b> ${inv.number}</p>
+                <p><b>Amount Paid:</b> ${inv.amount_paid / 100} ${inv.currency?.toUpperCase()}</p>
+                <p><b>Status:</b> ${inv.status}</p>
+                <p><a href="${inv.invoice_pdf}">Download Receipt</a></p>
+              `,
+              invoiceId: inv.id,
+            });
+          }
 
-        console.log("📧 Receipt email sent:", customerEmail);
-      } catch (err) {
-        console.error("❌ Failed to send receipt email:", err);
-      }
-    }
+          break;
+        }
 
-    break;
-}
 
         case "charge.succeeded": {
           const ch = event.data.object as Stripe.Charge;

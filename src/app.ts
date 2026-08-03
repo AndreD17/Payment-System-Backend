@@ -19,6 +19,7 @@ import { requireAuth, requireRole } from "./middleware/auth.js";
 import publicCheckout from "./routes/publicCheckout.routes.js";
 import admin from "./routes/admin.routes.js";
 import plans from "./routes/plans.routes.js";
+import { apiLimiter, authLimiter, publicLimiter, webhookLimiter } from "./middleware/rateLimit.js";
 
 export function createApp(): Express {
   const app = express();
@@ -26,6 +27,7 @@ export function createApp(): Express {
   // ✅ Stripe webhooks (must come BEFORE express.json)
   app.use(
     "/api/webhooks",
+    webhookLimiter,
     express.raw({ type: "application/json" }),
     webhooks
   );
@@ -69,14 +71,17 @@ export function createApp(): Express {
   // =========================
   // ✅ PUBLIC ROUTES (NO AUTH)
   // =========================
-  app.use("/api/public", publicCheckout);
-  app.use("/api/public", checkoutReceipt);
+  app.use("/api/public", publicLimiter, publicCheckout);
+  app.use("/api/public", publicLimiter, checkoutReceipt);
+
+  // Apply general API rate limits after webhook handling
+  app.use("/api", apiLimiter);
 
   // =========================
   // AUTH & PLANS
   // =========================
-  app.use("/api/plans", plans);
-  app.use("/api/auth", auth);
+  app.use("/api/plans", publicLimiter, plans);
+  app.use("/api/auth", authLimiter, auth);
 
   // =========================
   // PROTECTED ROUTES
